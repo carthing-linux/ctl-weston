@@ -30,6 +30,8 @@
 
 #include "config.h"
 
+#include <stdio.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <signal.h>
 #include <errno.h>
@@ -4313,16 +4315,43 @@ execute_command(struct wet_compositor *wet, int argc, char **argv) {
 }
 
 static int
+redirect_output_to(const char *log_file_path)
+{
+	int ret = -1;
+	int log_file = open(log_file_path, O_WRONLY | O_CLOEXEC, 0666);
+	if (log_file < 0) {
+		return -1;
+	}
+
+	// point stdout and stderr to the same file
+	ret = dup2(log_file, STDOUT_FILENO);
+	if (ret < 0) {
+		return -1;
+	}
+
+	ret = dup2(log_file, STDERR_FILENO);
+	if (ret < 0) {
+		return -1;
+	}
+
+	close(log_file);
+
+	return 0;
+}
+
+static int
 execute_autolaunch(struct wet_compositor *wet, struct weston_config *config)
 {
 	int ret = -1;
 	pid_t tmp_pid = -1;
 	char *autolaunch_path = NULL;
+	char *autolaunch_logs = NULL;
 	struct weston_config_section *section = NULL;
 
 	section = weston_config_get_section(config, "autolaunch", NULL, NULL);
 	weston_config_section_get_string(section, "path", &autolaunch_path, "");
 	weston_config_section_get_bool(section, "watch", &wet->autolaunch_watch, false);
+	weston_config_section_get_string(section, "logs", &autolaunch_logs, "");
 
 	if (!strlen(autolaunch_path))
 		goto out_ok;
@@ -4338,6 +4367,18 @@ execute_autolaunch(struct wet_compositor *wet, struct weston_config *config)
 		goto out;
 	} else if (tmp_pid == 0) {
 		cleanup_for_child_process();
+
+		/* Perform redirections */
+		if (strlen(autolaunch_path) > 0) {
+			ret = redirect_output_to(autolaunch_path);
+			if (ret < 0) {
+				fprintf(stderr, "failed to redirect output: %s\n", strerror(errno));
+				exit(1);
+			}
+
+                        free(autolaunch_logs);
+                }
+
 		execl(autolaunch_path, autolaunch_path, NULL);
 		/* execl shouldn't return */
 		fprintf(stderr, "Failed to execute autolaunch: %s\n", strerror(errno));
